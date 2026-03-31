@@ -1,0 +1,24 @@
+{
+  "name": "opencodex",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Autonomous coding assistant with web UI - no approvals required",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js",
+    "test": "node tests/run.js"
+  },
+  "keywords": ["autonomous", "coding", "agent", "ai"],
+  "author": "Antonis",
+  "license": "MIT",
+  "dependencies": {
+    "ws": "^8.18.0",
+    "node-fetch": "^3.3.2",
+    "better-sqlite3": "^11.3.0",
+    "playwright": "^1.45.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
