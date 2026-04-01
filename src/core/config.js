@@ -4,7 +4,7 @@ import { ensureAppDirs, getRepoRoot } from './paths.js';
 const DEFAULTS = {
   appId: 'opencodex',
   provider: process.env.PROVIDER || 'ollama',
-  model: process.env.MODEL || 'qwen3.5:397b-cloud',
+  model: process.env.MODEL || 'ollama/qwen3.5:397b-cloud',
 
   ollamaBaseUrl: process.env.OLLAMA_BASE_URL || 'http://127.0.0.1:11434/v1',
   openrouterBaseUrl: process.env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1',
@@ -20,18 +20,21 @@ const DEFAULTS = {
     .split(',')
     .map((s) => s.trim())
     .filter(Boolean),
+  fallbackProvider: process.env.FALLBACK_PROVIDER || 'nvidia',
+  fallbackModel: process.env.FALLBACK_MODEL || 'nvidia/meta/llama-3.1-405b-instruct',
 
   providerModels: {
-    ollama: process.env.OLLAMA_MODEL || 'qwen3.5:397b-cloud',
-    nvidia: process.env.NVIDIA_MODEL || 'meta/llama-3.3-70b-instruct',
-    openrouter: process.env.OPENROUTER_MODEL || 'openai/gpt-4o-mini',
-    openai: process.env.OPENAI_MODEL || 'gpt-4o-mini',
+    ollama: process.env.OLLAMA_MODEL || 'ollama/qwen3.5:397b-cloud',
+    nvidia: process.env.NVIDIA_MODEL || 'nvidia/meta/llama-3.1-405b-instruct',
+    openrouter: process.env.OPENROUTER_MODEL || 'openrouter/anthropic/claude-3.5-sonnet',
+    openai: process.env.OPENAI_MODEL || 'openai/gpt-5.4',
   },
 
   port: Number(process.env.OPENCODEX_PORT || 18882),
   host: process.env.OPENCODEX_HOST || '127.0.0.1',
 
   autoApprove: true,
+  autonomyMode: process.env.OPENCODEX_AUTONOMY_MODE || 'autonomy-first',
   maxIterations: 50,
   maxToolUses: 12,
   maxToolFailures: 3,
@@ -47,11 +50,33 @@ function getProviderEnvConfig(cfg, provider) {
   return { baseUrl: cfg.openaiBaseUrl, apiKey: cfg.openaiApiKey };
 }
 
+function normalizeProvider(provider) {
+  const p = String(provider || 'ollama').trim().toLowerCase();
+  return p === 'generic' ? 'openai' : p;
+}
+
+function normalizeModel(provider, model, providerModels) {
+  const normalizedProvider = normalizeProvider(provider);
+  const fallback = providerModels?.[normalizedProvider] || DEFAULTS.providerModels[normalizedProvider] || DEFAULTS.model;
+  const raw = String(model || fallback).trim();
+  if (!raw) return fallback;
+  if (/^(ollama|nvidia|openrouter|openai|generic)\//.test(raw)) return raw.replace(/^generic\//, 'openai/');
+  return `${normalizedProvider}/${raw}`;
+}
+
 function withDerived(raw) {
   const dirs = ensureAppDirs();
-  const provider = raw.provider || 'ollama';
+  const provider = normalizeProvider(raw.provider || 'ollama');
   const active = getProviderEnvConfig(raw, provider);
-  const model = raw.model || raw.providerModels?.[provider] || DEFAULTS.providerModels[provider] || DEFAULTS.model;
+  const normalizedProviderModels = {
+    ollama: normalizeModel('ollama', raw.providerModels?.ollama, raw.providerModels),
+    nvidia: normalizeModel('nvidia', raw.providerModels?.nvidia, raw.providerModels),
+    openrouter: normalizeModel('openrouter', raw.providerModels?.openrouter, raw.providerModels),
+    openai: normalizeModel('openai', raw.providerModels?.openai, raw.providerModels),
+  };
+  const model = normalizeModel(provider, raw.model, normalizedProviderModels);
+  const fallbackProvider = normalizeProvider(raw.fallbackProvider || raw.fallbackOrder?.find((p) => p !== provider) || DEFAULTS.fallbackProvider);
+  const fallbackModel = normalizeModel(fallbackProvider, raw.fallbackModel, normalizedProviderModels);
 
   const normalized = {
     ...DEFAULTS,
@@ -59,6 +84,9 @@ function withDerived(raw) {
     ...dirs,
     provider,
     model,
+    fallbackProvider,
+    fallbackModel,
+    providerModels: normalizedProviderModels,
     baseUrl: active.baseUrl,
     apiKey: active.apiKey,
     dataDir: dirs.dataDir,
@@ -67,13 +95,14 @@ function withDerived(raw) {
     memoryDb: dirs.memoryDb,
   };
 
+  normalized.fallbackOrder = normalized.fallbackOrder.map((p) => normalizeProvider(p));
   normalized.fallbacks = normalized.fallbackOrder
-    .filter((p) => p !== normalized.provider)
+    .filter((p) => p !== normalized.provider && ['ollama', 'nvidia', 'openrouter', 'openai'].includes(p))
     .map((p) => {
       const c = getProviderEnvConfig(normalized, p);
       return {
         provider: p,
-        model: normalized.providerModels?.[p] || DEFAULTS.providerModels[p],
+        model: normalizeModel(p, normalized.providerModels?.[p], normalized.providerModels),
         baseUrl: c.baseUrl,
         apiKey: c.apiKey,
       };

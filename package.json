@@ -8,7 +8,10 @@
     "start": "node src/index.js",
     "dev": "node --watch src/index.js",
     "test": "node tests/run.js",
-    "e2e:webui": "node tests/e2e/webui-chat.e2e.js"
+    "e2e:model-catalog": "node tests/e2e/model-catalog.e2e.js",
+    "e2e:webui": "node tests/e2e/webui-chat.e2e.js",
+    "e2e:webui-contract": "node tests/e2e/webui-contract.e2e.js",
+    "e2e": "npm run e2e:model-catalog && npm run e2e:webui && npm run e2e:webui-contract"
   },
   "keywords": [
     "autonomous",
