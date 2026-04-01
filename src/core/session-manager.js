@@ -1,14 +1,9 @@
-/**
- * Session Manager - Persistent chat sessions
- * Stores sessions as JSON files in data/sessions/
- */
-
 import { mkdir, readdir, readFile, writeFile, rm } from 'fs/promises';
 import { join } from 'path';
 import { existsSync } from 'fs';
 
 export class SessionManager {
-  constructor(sessionsDir = './data/sessions') {
+  constructor(sessionsDir) {
     this.sessionsDir = sessionsDir;
   }
 
@@ -51,7 +46,7 @@ export class SessionManager {
     if (!existsSync(this.sessionsDir)) return [];
     const files = await readdir(this.sessionsDir);
     const sessions = [];
-    for (const file of files.filter(f => f.endsWith('.json'))) {
+    for (const file of files.filter((f) => f.endsWith('.json'))) {
       try {
         const content = await readFile(join(this.sessionsDir, file), 'utf-8');
         const session = JSON.parse(content);
@@ -62,11 +57,9 @@ export class SessionManager {
           updatedAt: session.updatedAt,
           messageCount: session.messageCount,
         });
-      } catch (e) {
-        console.warn('Failed to load session', file, e);
+      } catch {
       }
     }
-    // Sort by updatedAt desc
     return sessions.sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt));
   }
 
@@ -82,15 +75,14 @@ export class SessionManager {
   async addMessage(sessionId, message) {
     const session = await this.load(sessionId);
     if (!session) return null;
-    
+
     session.messages.push(message);
     session.messageCount = session.messages.length;
-    
-    // Auto-generate title from first user message
+
     if (session.messageCount === 1 && message.role === 'user') {
       session.title = message.content.slice(0, 50) + (message.content.length > 50 ? '...' : '');
     }
-    
+
     await this.save(session);
     return session;
   }

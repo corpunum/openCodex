@@ -1,41 +1,33 @@
-/**
- * File Operations Tool
- * Auto-approved: read, write, create, delete files
- */
-
 import { readFile, writeFile, mkdir, rm, readdir } from 'fs/promises';
 import { existsSync } from 'fs';
-import { dirname, join } from 'path';
+import { dirname } from 'path';
+import { toWorkspacePath } from '../core/paths.js';
 
-export async function execute(args) {
+export async function execute(args, config) {
   const { action, path, content, recursive = true } = args;
-  
+  const target = toWorkspacePath(path, config.workspaceRoot);
+
   try {
     switch (action) {
       case 'read':
-        return await readFile(path, 'utf-8');
-      
+        return await readFile(target, 'utf-8');
       case 'write':
-        await mkdir(dirname(path), { recursive });
-        await writeFile(path, content, 'utf-8');
-        return { success: true, path };
-      
+        await mkdir(dirname(target), { recursive });
+        await writeFile(target, content ?? '', 'utf-8');
+        return { success: true, path: target };
       case 'create':
-        await mkdir(dirname(path), { recursive });
-        await writeFile(path, content || '', 'utf-8');
-        return { success: true, path };
-      
+        await mkdir(dirname(target), { recursive });
+        await writeFile(target, content || '', 'utf-8');
+        return { success: true, path: target };
       case 'delete':
-        if (existsSync(path)) {
-          await rm(path, { recursive: true, force: true });
-          return { success: true, deleted: path };
+        if (existsSync(target)) {
+          await rm(target, { recursive: true, force: true });
+          return { success: true, deleted: target };
         }
         return { success: false, error: 'File not found' };
-      
       case 'list':
-        const files = await readdir(path);
+        const files = await readdir(target);
         return { files };
-      
       default:
         return { success: false, error: `Unknown action: ${action}` };
     }

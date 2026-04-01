@@ -1,46 +1,39 @@
-/**
- * Autonomous Agent Core
- * NO approvals - executes tasks immediately after planning
- */
-
 import { loadConfig } from './config.js';
 import { SessionManager } from './session-manager.js';
+import { MemoryManager } from '../memory/memory.js';
 
 const MAX_ITERATIONS = 50;
-const MAX_TOOL_USES = 12;
 
 export class Agent {
-  constructor(options = {}) {
+  constructor() {
     this.config = loadConfig();
-    this.sessionManager = new SessionManager();
-    this.sessionHistory = [];
-    this.toolCounts = new Map();
+    this.sessionManager = new SessionManager(this.config.sessionsDir);
+    this.memory = new MemoryManager(this.config.memoryDb);
     this.iterationCount = 0;
     this.providerHealthy = true;
   }
 
   async initialize() {
     await this.sessionManager.initialize();
+    await this.memory.initialize();
     await this.runHealthCheck();
     console.log('[Agent] Initialized with', this.config.provider, '/', this.config.model);
+  }
+
+  authHeaders(apiKey) {
+    return apiKey ? { Authorization: `Bearer ${apiKey}` } : {};
   }
 
   async runHealthCheck() {
     try {
       const response = await fetch(`${this.config.baseUrl}/models`, {
         method: 'GET',
-        headers: this.config.provider === 'ollama' ? {} : {
-          'Authorization': `Bearer ${this.config.apiKey}`
-        },
-        signal: AbortSignal.timeout(5000)
+        headers: this.authHeaders(this.config.apiKey),
+        signal: AbortSignal.timeout(5000),
       });
       this.providerHealthy = response.ok;
-      if (!response.ok) {
-        console.warn('[Health] Provider check failed:', response.status);
-        await this.tryFailover();
-      }
-    } catch (e) {
-      console.warn('[Health] Provider unreachable:', e.message);
+      if (!response.ok) await this.tryFailover();
+    } catch {
       this.providerHealthy = false;
       await this.tryFailover();
     }
@@ -51,106 +44,82 @@ export class Agent {
       try {
         const response = await fetch(`${fallback.baseUrl}/models`, {
           method: 'GET',
-          signal: AbortSignal.timeout(5000)
+          headers: this.authHeaders(fallback.apiKey),
+          signal: AbortSignal.timeout(5000),
         });
         if (response.ok) {
-          console.log('[Failover] Switched to', fallback.model);
           this.config.provider = fallback.provider;
           this.config.model = fallback.model;
           this.config.baseUrl = fallback.baseUrl;
+          this.config.apiKey = fallback.apiKey;
           this.providerHealthy = true;
           return true;
         }
-      } catch (e) {
-        continue;
+      } catch {
       }
     }
     return false;
   }
 
   async chat(userMessage, sessionId = null) {
-    // Load or create session
-    let session;
-    if (sessionId) {
-      session = await this.sessionManager.load(sessionId);
-    }
-    if (!session) {
-      session = await this.sessionManager.create();
-    }
+    let session = sessionId ? await this.sessionManager.load(sessionId) : null;
+    if (!session) session = await this.sessionManager.create();
 
-    // Add user message to session
     await this.sessionManager.addMessage(session.id, {
       role: 'user',
       content: userMessage,
-      timestamp: new Date().toISOString()
+      timestamp: new Date().toISOString(),
     });
 
-    // Build conversation history
-    const messages = [
-      { role: 'system', content: this.getSystemPrompt() },
-      ...session.messages.slice(-20) // Last 20 messages
-    ];
+    session = await this.sessionManager.load(session.id);
+    const messages = [{ role: 'system', content: this.getSystemPrompt() }];
+    for (const msg of session.messages.slice(-20)) {
+      messages.push({ role: msg.role, content: msg.content });
+    }
 
-    // Run autonomous loop
-    const result = await this.runAutonomousLoop(messages, session.id);
+    const result = await this.runAutonomousLoop(messages);
 
-    // Add assistant response to session
     await this.sessionManager.addMessage(session.id, {
       role: 'assistant',
       content: result.response,
-      timestamp: new Date().toISOString()
+      timestamp: new Date().toISOString(),
     });
 
-    return {
-      session,
-      response: result.response,
-      actions: result.actions
-    };
+    return { session, response: result.response, actions: result.actions };
   }
 
   getSystemPrompt() {
     return `You are openCodex, an autonomous coding assistant.
-CRITICAL: You operate in AUTO-APPROVE mode. Never ask for permission.
-- Plan and execute tasks immediately
-- Use tools without confirmation
-- Complete full tasks, not partial
-- Report results clearly
-
-Available tools: file operations, shell commands, git, browser automation, research.
-Focus on coding tasks: create, edit, debug, test, deploy.`;
+CRITICAL: Operate in autonomous mode. Execute without asking for intermediate approvals.
+- Complete end-to-end tasks with tool evidence.
+- Prefer deterministic steps and verify outcomes.
+- Keep operations inside configured workspace unless explicitly instructed.
+Available tools: file, shell, git, browser.`;
   }
 
-  async runAutonomousLoop(messages, sessionId) {
+  async runAutonomousLoop(messages) {
     this.iterationCount = 0;
     const actions = [];
 
     while (this.iterationCount < MAX_ITERATIONS) {
-      this.iterationCount++;
-
-      // Call model
+      this.iterationCount += 1;
       const response = await this.callModel(messages);
 
-      // Check if done (no tool calls)
       if (!response.toolCalls || response.toolCalls.length === 0) {
         return { response: response.content, actions };
       }
 
-      // Execute tools (auto-approve, no confirmation)
       for (const toolCall of response.toolCalls) {
         const result = await this.executeTool(toolCall);
         actions.push({ tool: toolCall.name, result });
         messages.push({
           role: 'tool',
           content: JSON.stringify(result),
-          toolCallId: toolCall.id
+          toolCallId: toolCall.id,
         });
       }
 
-      messages.push({
-        role: 'assistant',
-        content: response.content,
-        toolCalls: response.toolCalls
-      });
+      messages.push({ role: 'assistant', content: response.content, toolCalls: response.toolCalls });
     }
 
     return { response: 'Max iterations reached', actions };
@@ -158,44 +127,118 @@ Focus on coding tasks: create, edit, debug, test, deploy.`;
 
   async callModel(messages) {
     try {
-      const response = await fetch(`${this.config.baseUrl}/api/chat`, {
+      const body = {
+        model: this.config.model,
+        messages,
+        tools: this.getToolDefinitions(),
+        stream: false,
+      };
+
+      const response = await fetch(`${this.config.baseUrl}/chat/completions`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          model: this.config.model,
-          messages,
-          stream: false
-        }),
-        signal: AbortSignal.timeout(120000)
+        headers: {
+          'Content-Type': 'application/json',
+          ...this.authHeaders(this.config.apiKey),
+        },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(120000),
       });
 
-      if (!response.ok) {
-        throw new Error(`Model API error: ${response.status}`);
-      }
-
+      if (!response.ok) throw new Error(`Model API error: ${response.status}`);
       const data = await response.json();
+      const msg = data.choices?.[0]?.message || data.message || {};
+      const toolCalls = msg.tool_calls || [];
+
       return {
-        content: data.message?.content || '',
-        toolCalls: data.message?.tool_calls || []
+        content: msg.content || '',
+        toolCalls: toolCalls.map((tc) => ({
+          id: tc.id,
+          name: tc.function?.name || tc.name,
+          arguments: tc.function?.arguments || tc.arguments || {},
+        })),
       };
     } catch (e) {
-      console.error('[Model] Call failed:', e.message);
       await this.tryFailover();
       return { content: `Error: ${e.message}`, toolCalls: [] };
     }
   }
 
+  getToolDefinitions() {
+    return [
+      {
+        type: 'function',
+        function: {
+          name: 'file',
+          description: 'File operations in workspace only',
+          parameters: {
+            type: 'object',
+            properties: {
+              action: { type: 'string', enum: ['create', 'read', 'write', 'delete', 'list'] },
+              path: { type: 'string' },
+              content: { type: 'string' },
+            },
+            required: ['action', 'path'],
+          },
+        },
+      },
+      {
+        type: 'function',
+        function: {
+          name: 'shell',
+          description: 'Execute shell commands in workspace',
+          parameters: {
+            type: 'object',
+            properties: {
+              command: { type: 'string' },
+              cwd: { type: 'string' },
+            },
+            required: ['command'],
+          },
+        },
+      },
+      {
+        type: 'function',
+        function: {
+          name: 'git',
+          description: 'Git operations inside workspace',
+          parameters: {
+            type: 'object',
+            properties: {
+              command: { type: 'string' },
+              cwd: { type: 'string' },
+            },
+            required: ['command'],
+          },
+        },
+      },
+      {
+        type: 'function',
+        function: {
+          name: 'browser',
+          description: 'Browser automation: fetch, screenshot, extract',
+          parameters: {
+            type: 'object',
+            properties: {
+              action: { type: 'string', enum: ['fetch', 'screenshot', 'extract'] },
+              url: { type: 'string' },
+              selector: { type: 'string' },
+            },
+            required: ['action'],
+          },
+        },
+      },
+    ];
+  }
+
   async executeTool(toolCall) {
     const { name, arguments: args } = toolCall;
-    console.log('[Tool] Executing:', name, args);
 
     try {
-      // Dynamic tool import
       const toolModule = await import(`../tools/${name}.js`);
-      const result = await toolModule.execute(args);
+      const parsedArgs = typeof args === 'string' ? JSON.parse(args) : args;
+      const result = await toolModule.execute(parsedArgs || {}, this.config);
       return { success: true, result };
     } catch (e) {
-      console.error('[Tool] Execution failed:', name, e.message);
       return { success: false, error: e.message };
     }
   }
