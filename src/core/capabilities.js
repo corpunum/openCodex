@@ -5,10 +5,10 @@ export function getCapabilities(config) {
     app_name: 'openCodex',
     menu: ['chat', 'missions', 'trace', 'runtime', 'settings'],
     quick_prompts: [
-      'Inspect the current repository and summarize the highest-risk code path.',
-      'Create a small test that proves this bug is fixed.',
-      'Plan and implement a mission to harden runtime health handling.',
-      'Review recent changes and list the most likely regressions.',
+      'Perform a code-level risk review and list concrete regression points.',
+      'Generate a surgical fix and include the exact verification commands.',
+      'Run a mission that validates fallback provider resilience.',
+      'Summarize workspace-impacting changes and propose rollout order.',
     ],
     features: {
       chat: true,
@@ -20,12 +20,15 @@ export function getCapabilities(config) {
       self_heal: true,
       browser_control: true,
       git_runtime: true,
+      workspace_guardrails: true,
+      code_focus: true,
       memory_inspection: false,
       research: false,
     },
     ui: {
       shell: 'shared-autonomy-v1',
       chat_style: 'imessage',
+      skin: 'codex-grid',
     },
     runtime: {
       host: config.host,
